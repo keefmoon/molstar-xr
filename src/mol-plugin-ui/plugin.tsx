@@ -279,6 +279,7 @@ export class DefaultViewport extends PluginUIComponent {
                 <TrajectoryViewportControls />
                 <StateSnapshotViewportControls />
                 <SnapshotDescription />
+                <XRButton plugin={this.plugin} />
             </div>
             <SVPControls />
             <VPControls />

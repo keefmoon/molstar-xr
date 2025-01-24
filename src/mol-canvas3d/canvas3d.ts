@@ -1152,8 +1152,750 @@ namespace Canvas3D {
                 }
 
                 removeConsoleStatsProvider(consoleStats);
-            }
+            },
+            get webxr() {
+                return {
+                    isWebXRSupported: !!gl.xr,
+                    requestXRSession: async () => {
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const sessionInit = await gl.xr.requestSession({ requiredFeatures: ['dom-overlay', 'local-floor', 'viewer', 'handheld-input'], mode: 'immersive-vr' }).catch((err:any) => {
+                            console.error('WebXR session failed', err);
+                        });
+
+                        return sessionInit;
+                    },
+                    enterXRSession: async (sessionInit: any) => {
+                        const immersiveSession = await gl.xr.requestSession({ optionalFeatures: true });
+
+                        // TODO: Add logic to render the scene in XR.
+
+                        return immersiveSession;
+                    },
+                    exitXRSession: () => {
+                        // TODO: Add logic to return to the normal view.
+                        return;
+                    }
+                };
+            },
+            add,
+            remove,
+            commit,
+            update: (repr, keepSphere) => {
+                if (repr) {
+                    if (!reprRenderObjects.has(repr)) return;
+                    scene.update(repr.renderObjects, !!keepSphere);
+                } else {
+                    scene.update(void 0, !!keepSphere);
+                }
+                forceDrawAfterAllCommited = true;
+            },
+            clear: () => {
+                reprUpdatedSubscriptions.forEach(v => v.unsubscribe());
+                reprUpdatedSubscriptions.clear();
+                reprRenderObjects.clear();
+                scene.clear();
+                helper.debug.clear();
+                if (fenceSync !== null) {
+                    webgl.deleteSync(fenceSync);
+                    fenceSync = null;
+                }
+                requestDraw();
+                reprCount.next(reprRenderObjects.size);
+            },
+            syncVisibility: () => {
+                if (camera.state.radiusMax === 0) {
+                    cameraResetRequested = true;
+                    nextCameraResetDuration = 0;
+                }
+
+                if (scene.syncVisibility()) {
+                    if (helper.debug.isEnabled) helper.debug.update();
+                }
+                requestDraw();
+            },
+
+            requestDraw,
+            tick,
+            animate,
+            resetTime,
+            pause,
+            resume: () => { drawPaused = false; },
+            identify,
+            mark,
+            getLoci,
+
+            handleResize,
+            requestResize: () => {
+                resizeRequested = true;
+            },
+            requestCameraReset: options => {
+                nextCameraResetDuration = options?.durationMs;
+                nextCameraResetSnapshot = options?.snapshot;
+                cameraResetRequested = true;
+            },
+            camera,
+            boundingSphere: scene.boundingSphere,
+            boundingSphereVisible: scene.boundingSphereVisible,
+            get notifyDidDraw() { return notifyDidDraw; },
+            set notifyDidDraw(v: boolean) { notifyDidDraw = v; },
+            didDraw,
+            commited,
+            commitQueueSize,
+            reprCount,
+            resized,
+            setProps: (properties, doNotRequestDraw = false) => {
+                const props: PartialCanvas3DProps = typeof properties === 'function'
+                    ? produce(getProps(), properties as any)
+                    : properties;
+
+                if (props.sceneRadiusFactor !== undefined) {
+                    p.sceneRadiusFactor = props.sceneRadiusFactor;
+                    camera.setState({ radiusMax: getSceneRadius() }, 0);
+                }
+
+                const cameraState: Partial<Camera.Snapshot> = Object.create(null);
+                if (props.camera && props.camera.mode !== undefined && props.camera.mode !== camera.state.mode) {
+                    cameraState.mode = props.camera.mode;
+                }
+                const oldFov = Math.round(radToDeg(camera.state.fov));
+                if (props.camera && props.camera.fov !== undefined && props.camera.fov !== oldFov) {
+                    cameraState.fov = degToRad(props.camera.fov);
+                }
+                if (props.cameraFog !== undefined && props.cameraFog.params) {
+                    const newFog = props.cameraFog.name === 'on' ? props.cameraFog.params.intensity : 0;
+                    if (newFog !== camera.state.fog) cameraState.fog = newFog;
+                }
+                if (props.cameraClipping !== undefined) {
+                    if (props.cameraClipping.far !== undefined && props.cameraClipping.far !== camera.state.clipFar) {
+                        cameraState.clipFar = props.cameraClipping.far;
+                    }
+                    if (props.cameraClipping.minNear !== undefined && props.cameraClipping.minNear !== camera.state.minNear) {
+                        cameraState.minNear = props.cameraClipping.minNear;
+                    }
+                    if (props.cameraClipping.radius !== undefined) {
+                        const radius = (getSceneRadius() / 100) * (100 - props.cameraClipping.radius);
+                        if (radius > 0 && radius !== cameraState.radius) {
+                            // if radius = 0, NaNs happen
+                            cameraState.radius = Math.max(radius, 0.01);
+                        }
+                    }
+                }
+                if (Object.keys(cameraState).length > 0) camera.setState(cameraState);
+
+                if (props.camera?.helper) helper.camera.setProps(props.camera.helper);
+                if (props.camera?.manualReset !== undefined) p.camera.manualReset = props.camera.manualReset;
+                if (props.camera?.stereo !== undefined) {
+                    Object.assign(p.camera.stereo, props.camera.stereo);
+                    stereoCamera.setProps(p.camera.stereo.params);
+                }
+                if (props.cameraResetDurationMs !== undefined) p.cameraResetDurationMs = props.cameraResetDurationMs;
+                if (props.transparentBackground !== undefined) p.transparentBackground = props.transparentBackground;
+                if (props.dpoitIterations !== undefined) p.dpoitIterations = props.dpoitIterations;
+                if (props.pickPadding !== undefined) p.pickPadding = props.pickPadding;
+                if (props.userInteractionReleaseMs !== undefined) p.userInteractionReleaseMs = props.userInteractionReleaseMs;
+                if (props.viewport !== undefined) {
+                    const doNotUpdate = p.viewport === props.viewport ||
+                        (p.viewport.name === props.viewport.name && shallowEqual(p.viewport.params, props.viewport.params));
+
+                    if (!doNotUpdate) {
+                        p.viewport = props.viewport;
+                        updateViewport();
+                        syncViewport();
+                    }
+                }
+
+                if (props.postprocessing?.background) {
+                    Object.assign(p.postprocessing.background, props.postprocessing.background);
+                    passes.draw.postprocessing.background.update(camera, p.postprocessing.background, changed => {
+                        if (changed && !doNotRequestDraw) requestDraw();
+                    });
+                }
+                if (props.postprocessing) Object.assign(p.postprocessing, props.postprocessing);
+                if (props.marking) Object.assign(p.marking, props.marking);
+                if (props.multiSample) Object.assign(p.multiSample, props.multiSample);
+                if (props.illumination) Object.assign(p.illumination, props.illumination);
+                if (props.hiZ) hiZ.setProps(props.hiZ);
+                if (props.renderer) renderer.setProps(props.renderer);
+                if (props.trackball) controls.setProps(props.trackball);
+                if (props.interaction) interactionHelper.setProps(props.interaction);
+                if (props.debug) helper.debug.setProps(props.debug);
+                if (props.handle) helper.handle.setProps(props.handle);
+
+                if (cameraState.mode === 'orthographic') {
+                    p.camera.stereo.name = 'off';
+                }
+
+                if (!doNotRequestDraw) {
+                    requestDraw();
+                }
+            },
+            getImagePass: (props: Partial<ImageProps> = {}) => {
+                return new ImagePass(webgl, assetManager, renderer, scene, camera, helper, passes.draw.transparency, props);
+            },
+            getRenderObjects(): GraphicsRenderObject[] {
+                const renderObjects: GraphicsRenderObject[] = [];
+                scene.forEach((_, ro) => renderObjects.push(ro));
+                return renderObjects;
+            },
+            get props() {
+                return getProps();
+            },
+            get input() {
+                return input;
+            },
+            get stats() {
+                return renderer.stats;
+            },
+            get interaction() {
+                return interactionHelper.events;
+            },
+            dispose: () => {
+                contextRestoredSub.unsubscribe();
+                ctxChangedSub?.unsubscribe();
+
+                for (const s of interactionSubs) s.unsubscribe();
+                interactionSubs = [];
+
+                cancelAnimationFrame(animationFrameHandle);
+
+                markBuffer = [];
+
+                scene.clear();
+                helper.debug.clear();
+                controls.dispose();
+                renderer.dispose();
+                interactionHelper.dispose();
+                hiZ.dispose();
+                if (fenceSync !== null) {
+                    webgl.deleteSync(fenceSync);
+                    fenceSync = null;
+                }
+
+                removeConsoleStatsProvider(consoleStats);
+            },
+            get webxr() {
+                return {
+                    isWebXRSupported: !!gl.xr,
+                    requestXRSession: async () => {
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const sessionInit = await (gl.xr.requestSession({ optionalFeatures: true })).catch((err:any) => {
+                            console.error('WebXR session failed', err);
+                        });
+
+                        return sessionInit;
+                    },
+                    enterXRSession: async (sessionInit: any) => {
+                        if (!sessionInit) return;
+                        
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const immersiveSession = await gl.xr.requestSession({ optionalFeatures: true, requiredFeatures: ['dom-overlay', 'local-floor', 'viewer', 'handheld-input'], mode: 'immersive-vr' });
+                        
+                        gl.xr.session = sessionInit;
+                        gl.xr.session.addEventListener('end', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        gl.xr.session.addEventListener('close', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        return immersiveSession;
+                    },
+                    exitXRSession: () => {
+                        if (gl.xr.session){
+                            gl.xr.session.end();
+                            gl.xr.session = null;
+                        }
+                        
+                        gl.xr.session = null;
+                        gl.xr.session = null;
+                        
+                        return;
+                    },
+                    makeXRCompatible: async (domOverlayState: any) => {
+                        if(gl.xr.session){
+                            gl.makeXRCompatible(domOverlayState);
+                        }
+                    },
+                    requestHitTestSource: async () => {
+                        if (gl.xr.session){
+                            const hitTestSource = await gl.xr.session.requestHitTestSource();
+                            return hitTestSource;
+                        }
+                    }
+                };
+            },
+            
+            add,
+            remove,
+            commit,
+            update: (repr, keepSphere) => {
+                if (repr) {
+                    if (!reprRenderObjects.has(repr)) return;
+                    scene.update(repr.renderObjects, !!keepSphere);
+                } else {
+                    scene.update(void_0, !!keepSphere);
+                }
+                forceDrawAfterAllCommited = true;
+            },
+            clear: () => {
+                reprUpdatedSubscriptions.forEach(v => v.unsubscribe());
+                reprUpdatedSubscriptions.clear();
+                reprRenderObjects.clear();
+                scene.clear();
+                helper.debug.clear();
+                if (fenceSync !== null) {
+                    webgl.deleteSync(fenceSync);
+                    fenceSync = null;
+                }
+                requestDraw();
+                reprCount.next(reprRenderObjects.size);
+            },
+            syncVisibility: () => {
+                if (camera.state.radiusMax === 0) {
+                    cameraResetRequested = true;
+                    nextCameraResetDuration = 0;
+                }
+
+                if (scene.syncVisibility()) {
+                    if (helper.debug.isEnabled) helper.debug.update();
+                }
+                requestDraw();
+            },
+            
+            requestCameraReset: options => {
+                nextCameraResetDuration = options?.durationMs;
+                nextCameraResetSnapshot = options?.snapshot;
+                cameraResetRequested = true;
+            },
+            camera,
+            boundingSphere: scene.boundingSphere,
+            boundingSphereVisible: scene.boundingSphereVisible,
+            get notifyDidDraw() { return notifyDidDraw; },
+            set notifyDidDraw(v: boolean) { notifyDidDraw = v; },
+            didDraw,
+            commited,
+            commitQueueSize,
+            reprCount,
+            resized,
+            setProps: (properties, doNotRequestDraw = false) => {
+                const props: PartialCanvas3DProps = typeof properties === 'function'
+                    ? produce(getProps(), properties as any)
+                    : properties;
+
+                if (props.sceneRadiusFactor !== undefined) {
+                    p.sceneRadiusFactor = props.sceneRadiusFactor;
+                    camera.setState({ radiusMax: getSceneRadius() }, 0);
+                }
+
+                const cameraState: Partial<Camera.Snapshot> = Object.create(null);
+                if (props.camera && props.camera.mode !== undefined && props.camera.mode !== camera.state.mode) {
+                    cameraState.mode = props.camera.mode;
+                }
+                const oldFov = Math.round(radToDeg(camera.state.fov));
+                if (props.camera && props.camera.fov !== undefined && props.camera.fov !== oldFov) {
+                    cameraState.fov = degToRad(props.camera.fov);
+                }
+                if (props.cameraFog !== undefined && props.cameraFog.params) {
+                    const newFog = props.cameraFog.name === 'on' ? props.cameraFog.params.intensity : 0;
+                    if (newFog !== camera.state.fog) cameraState.fog = newFog;
+                }
+                if (props.cameraClipping !== undefined) {
+                    if (props.cameraClipping.far !== undefined && props.cameraClipping.far !== camera.state.clipFar) {
+                        cameraState.clipFar = props.cameraClipping.far;
+                    }
+                    if (props.cameraClipping.minNear !== undefined && props.cameraClipping.minNear !== camera.state.minNear) {
+                        cameraState.minNear = props.cameraClipping.minNear;
+                    }
+                    if (props.cameraClipping.radius !== undefined) {
+                        const radius = (getSceneRadius() / 100) * (100 - props.cameraClipping.radius);
+                        if (radius > 0 && radius !== cameraState.radius) {
+                            // if radius = 0, NaNs happen
+                            cameraState.radius = Math.max(radius, 0.01);
+                        }
+                    }
+                }
+                if (Object.keys(cameraState).length > 0) camera.setState(cameraState);
+
+                if (props.camera?.helper) helper.camera.setProps(props.camera.helper);
+                if (props.camera?.manualReset !== undefined) p.camera.manualReset = props.camera.manualReset;
+                if (props.camera?.stereo !== undefined) {
+                    Object.assign(p.camera.stereo, props.camera.stereo);
+                    stereoCamera.setProps(p.camera.stereo.params);
+                }
+                if (props.cameraResetDurationMs !== undefined) p.cameraResetDurationMs = props.cameraResetDurationMs;
+                if (props.transparentBackground !== undefined) p.transparentBackground = props.transparentBackground;
+                if (props.dpoitIterations !== undefined) p.dpoitIterations = props.dpoitIterations;
+                if (props.pickPadding !== undefined) p.pickPadding = props.pickPadding;
+                if (props.userInteractionReleaseMs !== undefined) p.userInteractionReleaseMs = props.userInteractionReleaseMs;
+                if (props.viewport !== undefined) {
+                    const doNotUpdate = p.viewport === props.viewport ||
+                        (p.viewport.name === props.viewport.name && shallowEqual(p.viewport.params, props.viewport.params));
+
+                    if (!doNotUpdate) {
+                        p.viewport = props.viewport;
+                        updateViewport();
+                        syncViewport();
+                    }
+                }
+
+                if (props.postprocessing?.background) {
+                    Object.assign(p.postprocessing.background, props.postprocessing.background);
+                    passes.draw.postprocessing.background.update(camera, p.postprocessing.background, changed => {
+                        if (changed && !doNotRequestDraw) requestDraw();
+                    });
+                }
+                if (props.postprocessing) Object.assign(p.postprocessing, props.postprocessing);
+                if (props.marking) Object.assign(p.marking, props.marking);
+                if (props.multiSample) Object.assign(p.multiSample, props.multiSample);
+                if (props.illumination) Object.assign(p.illumination, props.illumination);
+                if (props.hiZ) hiZ.setProps(props.hiZ);
+                if (props.renderer) renderer.setProps(props.renderer);
+                if (props.trackball) controls.setProps(props.trackball);
+                if (props.interaction) interactionHelper.setProps(props.interaction);
+                if (props.debug) helper.debug.setProps(props.debug);
+                if (props.handle) helper.handle.setProps(props.handle);
+
+                if (cameraState.mode === 'orthographic') {
+                    p.camera.stereo.name = 'off';
+                }
+
+                if (!doNotRequestDraw) {
+                    requestDraw();
+                }
+            },
+            getImagePass: (props: Partial<ImageProps> = {}) => {
+                return new ImagePass(webgl, assetManager, renderer, scene, camera, helper, passes.draw.transparency, props);
+            },
+            getRenderObjects(): GraphicsRenderObject[] {
+                const renderObjects: GraphicsRenderObject[] = [];
+                scene.forEach((_, ro) => renderObjects.push(ro));
+                return renderObjects;
+            },
+            get props() {
+                return getProps();
+            },
+            get input() {
+                return input;
+            },
+            get stats() {
+                return renderer.stats;
+            },
+            get interaction() {
+                return interactionHelper.events;
+            },
+            dispose: () => {
+                contextRestoredSub.unsubscribe();
+                ctxChangedSub?.unsubscribe();
+
+                for (const s of interactionSubs) s.unsubscribe();
+                interactionSubs = [];
+
+                cancelAnimationFrame(animationFrameHandle);
+
+                markBuffer = [];
+
+                scene.clear();
+                helper.debug.clear();
+                controls.dispose();
+                renderer.dispose();
+                interactionHelper.dispose();
+                hiZ.dispose();
+                if (fenceSync !== null) {
+                    webgl.deleteSync(fenceSync);
+                    fenceSync = null;
+                }
+
+                removeConsoleStatsProvider(consoleStats);
+            },
+            get webxr() {
+                return {
+                    isWebXRSupported: !!gl.xr,
+                    requestXRSession: async () => {
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const sessionInit = await (gl.xr.requestSession({ optionalFeatures: true })).catch((err:any) => {
+                            console.error('WebXR session failed', err);
+                        });
+
+                        return sessionInit;
+                    },
+                    enterXRSession: async (sessionInit: any) => {
+                        if (!sessionInit) return;
+                        
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const immersiveSession = await gl.xr.requestSession({ optionalFeatures: true });
+                        
+                        gl.xr.session = sessionInit;
+                        gl.xr.session.addEventListener('end', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        gl.xr.session.addEventListener('close', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        const gl_xr_session_handle_frame = (gl_xr_session_handle_frame_p: any) => {
+                            // render is only called here, so lets call it
+                            // renderer.render(gl.xr.session.renderTarget);
+                            
+                            
+                            
+                        };
+                        const xrRefSpace = await gl.xr.session.requestReferenceSpace('local');
+                        const xrHitTest = await gl.xr.session.requestHitTestSource({ space: 'viewer' });
+
+                        gl.xr.session.setBaseLayer(new XRWebGLLayer(gl, gl.xr.session));
+                        gl.xr.session.requestAnimationFrame((time: any, xrFrame: any) => {
+                            
+                            if (!gl.xr.session) return;
+                            
+                            const xrSpace = gl.xr.session.requestReferenceSpace();
+                            const xrHitTest = gl.xr.session.requestHitTestSource();
+                            gl.xr.session.requestAnimationFrame(xrFrame);
+                            
+                            
+                            // render is only called here, so lets call it
+                            if (xrHitTest && xrSpace){
+                                renderer.render(gl.xr.session, xrSpace, xrHitTest);
+                            }
+                        });
+
+                        
+                        return immersiveSession;
+                    },
+                    exitXRSession: () => {
+                        if (gl.xr.session){
+                            gl.xr.session.end();
+                            gl.xr.session = null;
+                        }
+                        
+                        gl.xr.session = null;
+                        gl.xr.session = null;
+                        
+                        return;
+                    },
+                    makeXRCompatible: async (domOverlayState: any) => {
+                        if(gl.xr.session){
+                            gl.makeXRCompatible(domOverlayState);
+                        }
+                    },
+                    requestHitTestSource: async () => {
+                        if (gl.xr.session){
+                            const hitTestSource = await gl.xr.session.requestHitTestSource({ space: 'viewer' });
+                            return hitTestSource;
+                        }
+                    },
+                    setSession: async (session: any) => {
+                        gl.xr.session = session;
+                        
+                        return;
+                    }
+                };
+            },
         };
+=======
+            get props() {
+                return getProps();
+            },
+            get input() {
+                return input;
+            },
+            get stats() {
+                return renderer.stats;
+            },
+            get interaction() {
+                return interactionHelper.events;
+            },
+            dispose: () => {
+                contextRestoredSub.unsubscribe();
+                ctxChangedSub?.unsubscribe();
+
+                for (const s of interactionSubs) s.unsubscribe();
+                interactionSubs = [];
+
+                cancelAnimationFrame(animationFrameHandle);
+
+                markBuffer = [];
+
+                scene.clear();
+                helper.debug.clear();
+                controls.dispose();
+                renderer.dispose();
+                interactionHelper.dispose();
+                hiZ.dispose();
+                if (fenceSync !== null) {
+                    webgl.deleteSync(fenceSync);
+                    fenceSync = null;
+                }
+
+                removeConsoleStatsProvider(consoleStats);
+            },
+            get webxr() {
+                return {
+                    isWebXRSupported: !!gl.xr,
+                    requestXRSession: async () => {
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const sessionInit = await (gl.xr.requestSession({ optionalFeatures: true })).catch((err:any) => {
+                            console.error('WebXR session failed', err);
+                        });
+
+                        return sessionInit;
+                    },
+                    enterXRSession: async (sessionInit: any) => {
+                        if (!sessionInit) return;
+                        
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const immersiveSession = await gl.xr.requestSession({ optionalFeatures: true });
+                        
+                        gl.xr.session = sessionInit;
+                        gl.xr.session.addEventListener('end', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        gl.xr.session.addEventListener('close', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        return immersiveSession;
+                    },
+                    exitXRSession: () => {
+                        if (gl.xr.session){
+                            gl.xr.session.end();
+                            gl.xr.session = null;
+                        }
+                        
+                        gl.xr.session = null;
+                        gl.xr.session = null;
+                        
+                        return;
+                    }
+                };
+            },
+        };
+=======
+            get props() {
+                return getProps();
+            },
+            get input() {
+                return input;
+            },
+            get stats() {
+                return renderer.stats;
+            },
+            get interaction() {
+                return interactionHelper.events;
+            },
+            dispose: () => {
+                contextRestoredSub.unsubscribe();
+                ctxChangedSub?.unsubscribe();
+
+                for (const s of interactionSubs) s.unsubscribe();
+                interactionSubs = [];
+
+                cancelAnimationFrame(animationFrameHandle);
+
+                markBuffer = [];
+
+                scene.clear();
+                helper.debug.clear();
+                controls.dispose();
+                renderer.dispose();
+                interactionHelper.dispose();
+                hiZ.dispose();
+                if (fenceSync !== null) {
+                    webgl.deleteSync(fenceSync);
+                    fenceSync = null;
+                }
+
+                removeConsoleStatsProvider(consoleStats);
+            },
+            get webxr() {
+                return {
+                    isWebXRSupported: !!gl.xr,
+                    requestXRSession: async () => {
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const sessionInit = await (gl.xr.requestSession({ optionalFeatures: true })).catch((err:any) => {
+                            console.error('WebXR session failed', err);
+                        });
+
+                        return sessionInit;
+                    },
+                    enterXRSession: async (sessionInit: any) => {
+                        if (!sessionInit) return;
+                        
+                        if (!gl.xr) return;
+                        // AR is preferred over VR if the option is available
+                        const immersiveSession = await gl.xr.requestSession({ optionalFeatures: true });
+                        
+                        gl.xr.session = sessionInit;
+                        gl.xr.session.addEventListener('end', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        gl.xr.session.addEventListener('close', () => {
+                            gl.xr.session = null;
+                        })
+                        
+                        return immersiveSession;
+                    },
+                    exitXRSession: () => {
+                        if (gl.xr.session){
+                            gl.xr.session.end();
+                            gl.xr.session = null;
+                        }
+                        
+                        gl.xr.session = null;
+                        gl.xr.session = null;
+                        
+                        return;
+                    }
+                };
+            },
+        };
+        
+
+        function updateViewport() {
+            const oldX = x, oldY = y, oldWidth = width, oldHeight = height;
+
+            if (p.viewport.name === 'canvas') {
+                x = 0;
+                y = 0;
+                width = gl.drawingBufferWidth;
+                height = gl.drawingBufferHeight;
+            } else if (p.viewport.name === 'static-frame') {
+                x = p.viewport.params.x * webgl.pixelRatio;
+                height = p.viewport.params.height * webgl.pixelRatio;
+                y = gl.drawingBufferHeight - height - p.viewport.params.y * webgl.pixelRatio;
+                width = p.viewport.params.width * webgl.pixelRatio;
+            } else if (p.viewport.name === 'relative-frame') {
+                x = Math.round(p.viewport.params.x * gl.drawingBufferWidth);
+                height = Math.round(p.viewport.params.height * gl.drawingBufferHeight);
+                y = Math.round(gl.drawingBufferHeight - height - p.viewport.params.y * gl.drawingBufferHeight);
+                width = Math.round(p.viewport.params.width * gl.drawingBufferWidth);
+            }
+
+            if (oldX !== x || oldY !== y || oldWidth !== width || oldHeight !== height) {
+                forceNextRender = true;
+            }
+        }
+
+        function syncViewport() {
+            pickHelper.setViewport(x, y, width, height);
+            renderer.setViewport(x, y, width, height);
+            Viewport.set(camera.viewport, x, y, width, height);
+            Viewport.set(controls.viewport, x, y, width, height);
+            hiZ.setViewport(x, y, width, height);
+        }
+    }
+}
 
         function updateViewport() {
             const oldX = x, oldY = y, oldWidth = width, oldHeight = height;
